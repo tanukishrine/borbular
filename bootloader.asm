@@ -6,7 +6,12 @@ org 0x7c00
 	; FAT headers stops at 3e
 	times 0x3e - ( $ - $$ ) db 0
 
+bootdrive: db 0
+
 start:
+	; store bootdrive for later
+	mov	[bootdrive], dl
+
 	; clear direction flag
 	cld
 
@@ -38,7 +43,7 @@ start:
 	int	0x13
 
 	; clear screen
-	mov	ax, 0x0007	; 80x25 monochrome text
+	mov	ax, 0x0003	; 80x25 16 color text
 	int	0x10
 
 	jmp	0:0x0500	; goto: kernel

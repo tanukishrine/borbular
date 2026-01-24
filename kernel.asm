@@ -47,6 +47,7 @@ org 0x0500
 
 %define FLAG_IMMEDIATE	0x80	; immediate flag
 %define MASK_LENGTH	0x7f	; namelen mask
+%define BOOTDRIVE	7c3eh
 
 %macro	const 3 ; name, len, lit
 	wordlink %1, %2
@@ -54,7 +55,8 @@ org 0x0500
 	ret
 %endmacro
 
-start:		mov	bp, 0xff00	; initialize SP
+start:		
+		mov	bp, 0xff00	; initialize SP
 		mov	sp, 0x0000	; initialize RS
 		jmp	interpret
 
@@ -71,7 +73,8 @@ buffer:		times 65 db 0	; input buffer
 curchar:	dw 0	; current word addr
 curlen:		db 0	; current word len
 
-blk:		dw 0x7e00	; start of source
+blk:		dw 0x7e00	; pointer to current line
+line:		dw 16*3		; number of lines to read
 
 ; DICTIONARY
 		; key ( -- c )
@@ -101,7 +104,7 @@ abort:		mov	bp, 0xff00
 		wordlink 'quit', 4
 quit:		mov	sp, 0x0000
 		mov	byte [state], 0
-		mov	word [blk], 0
+		mov	word [line], 0
 		mov	word [in], buffer+64
 		jmp	interpret
 
@@ -237,9 +240,11 @@ ln_in:		call	scnt
 		spop	ax
 		test	ax, ax
 		js	underflow
-		mov	ax, [blk]
+		mov	ax, [line]
 		test	ax, ax
 		jz	rdln
+		dec	ax
+		mov	[line], ax
 		jmp	rdbln
 
 		; read block line
@@ -674,8 +679,11 @@ meta_then:	ret
 
 ; SYSTEM VARIABLES
 
-; ( -- a ) currently selected block
-const 'blk>', 4, blk
+; ( -- a ) currently selected line
+const 'blk', 3, blk
+
+; ( -- a ) current line count
+const 'line', 4, line
 
 ; ( -- a ) last word of the directionary
 const 'latest', 6, latest
@@ -745,9 +753,66 @@ value:		call	create
 		call	exit
 		ret
 
-; doer/does:
-; alias:
-; const:
+		; to ... ( n -- )
+		; reassign value of ... to n
+		wordlink 'to', 2 | FLAG_IMMEDIATE
+to_value:	call	toword
+		call	find
+		spop	ax
+		test	ax, ax
+		jz	notfound
+		mov	al, [state]
+		test	al, al
+		jz	.imm
+		call	litn
+		spush	.imm
+		call	compile_comma
+		ret
+	.imm:	spop	bx ; wordref
+		spop	ax ; number
+		add	bx, 3
+		mov	[bx], ax
+		ret
+
+		; alias ... ( x y -- )
+		wordlink 'alias', 5
+alias:		call	toword
+		call	find
+		spop	ax
+		test	ax, ax
+		jz	notfound
+		call	create
+		mov	di, [here]
+		litb	0xe9		; jmp rel16
+		spop	ax ; wordref
+		sub	ax, di
+		sub	ax, 2
+		stosw
+		mov	[here], di
+		ret
+
+; TO BE IMPLEMENTED
+		; doer ( -- )
+		wordlink 'doer', 4
+doer:		call	create
+		mov	di, [here]
+		litb	0xe9		; jmp rel16
+		add	di, 2
+		mov	[here], di
+		spush	di
+		ret
+
+; TO BE IMPLEMENTED
+		; does> ( -- )
+		wordlink 'does', 4
+does:		mov	ax, [here]
+		mov	bx, [latest]
+		sub	ax, bx
+		sub	ax, 3
+		inc	bx
+		mov	[bx], ax
+		call	exit
+		ret
 
 ; ASCII CONSTANTS
 
@@ -1045,7 +1110,7 @@ c_comma:	spop	ax
 allot:		spop	ax
 		mov	bx, [here]
 		add	bx, ax
-		mov	[here], bx
+		mov	word [here], bx
 		ret
 
 		; ( n -- )
@@ -1083,6 +1148,7 @@ move_comma:	spop	cx
 		spop	si
 		mov	di, [here]
 		rep	movsb
+		mov	[here], di
 		ret
 
 
@@ -1152,6 +1218,16 @@ shiftl:		mov	ax, [bp]
 shiftr:		mov	ax, [bp]
 		shr	ax, 1
 		mov	[bp], ax
+		ret
+
+		; ( n -- lsb msb )
+		wordlink 'L|M', 3
+bytesplit:	spop	ax
+		xor	bx, bx
+		mov	bl, al
+		spush	bx
+		mov	bl, ah
+		spush	bx
 		ret
 
 		; ( n -- n+1 )
@@ -1402,6 +1478,7 @@ dot:		spop	ax
 		pop	ax
 		jmp	digit
 
+; REMOV DOT_H FROM VIEW
 		; ( n -- )
 		; print n in hex form as a nibble
 		wordlink '.h', 2
@@ -1409,7 +1486,7 @@ doth:		spop	ax
 		and	al, 0x0f ; mask for the first byte
 		cmp	al, 10
 		jb	.digit
-		add	al, 0x37-'0'
+		add	al, 'a'-'0'-10
 	.digit:	add	al, '0'
 		mov	ah, 0x0e
 		int	0x10
@@ -1516,6 +1593,40 @@ tick:		xor	ah, ah
 		spush	cx	; higher order 
 		spush	dx	; lower order 
 		ret		; higher order at cx
+
+		; ( sector addr -- )
+		wordlink 'read', 4
+read:		spop	bx	; add of destination
+		spop	cx	; cylinder|sector number
+		mov	ah, 02	; BIOS read disk sectors
+		mov	al, 2	; number of sectors to read
+		mov	dh, 0	; head number
+		mov	dl, [BOOTDRIVE]
+		int	13h
+		jnc	disk_ok
+		jmp	disk_err
+
+		; ( addr sector -- )
+		wordlink 'write', 5
+write:		spop	cx	; cylinder|sector number
+		spop	bx	; addr of source
+		mov	ah, 03	; BIOS write disk sectors
+		mov	al, 2	; number of sectors to write
+		mov	dh, 0	; head number
+		mov	dl, [BOOTDRIVE]
+		int	13h
+		jc	disk_err
+
+disk_ok:	spush	-1
+		ret
+disk_err:	spush	0
+		ret
+
+		; ( -- )
+		wordlink 'page', 4
+page:		mov	ax, 0x0003
+		int	10h
+		ret
 
 		wordlink 'noop', 4
 noop:		ret
