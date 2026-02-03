@@ -1,53 +1,396 @@
 \ KERNEL WORDS
-: [compile] ' compile, ; immediate
-: postpone ' litn [ ' compile, litn ] compile, ; immediate
+\ for compiling immediate words during compilation
+: [compile] ( "name" -- ) word find drop compile, ; immediate
+\ ( a R: b -- R: b a ) safe push to return stack for NEXT loops
 : >r? r> r> rot >r >r >r ;  ( a R: b -- R: a b )
+\ ( R: a b -- b R: a ) likewise, pop from return stack
 : r>? r> r> r> nrot >r >r ; ( R: a b -- a R: b )
+\ ( R: a b -- b R: a b ) safe fetch from return stack
+: r@? r> r> r> dup >a >r >r >r a> ;
+\ ( a n -- ) hexdump n lines from addr a
 : dump ( a n -- ) >r begin nl> ':' emit dup .x spc>
   4 >r begin dup c@ dup .x >r? 1+ dup c@ dup .x >r? 1+ spc> next
   8 >r begin r>? next 8 >r begin dup $20 < if drop '.' then emit
   next next drop ;
+\ ( -- ) display all visible words in the dictionary
+: words latest @ begin 3 - dup over 2+ c@ $7f and
+  dup >r - r> type spc> @ dup 0 = until ;
 
-\ BOOT MESSAGE
-: memused here @ $500 - ; : memfree $7bff memused - ;
-: memstat \ prints current dictionary usage
-  memused 1000 / . ." kB used " memfree 1000 / . ." kB free" ;
-here @ ," Welcome to TANUKI OS" 20 type nl> memstat
 
-\ BLOCK SUBSYSTEM
-here @ 1024 allot value blk( \ start address of block buffer
-blk( 1024 + value blk) \ end address of block buffer
--1 value blk? \ currently active block
-\ ( n -- addr ) return the address of block n
-: >blk 10 lshift $7e00 + ;
-\ ( n -- ) interpret forth code from block n
-: load >blk blk ! 16 line ! ;
+
+\ BLOCK WORDS
+here @ 1024 allot value blk(  \ start addr of blk buf
+blk( 1024 + value blk)        \ end addr of blk buf
+-1 value blk>                 \ currently selected blk
+: >blk ( n -- addr ) 10 lshift $7e00 + ; \ find addr of blk n
+: load ( n -- ) >blk blk ! 16 line ! ; \ interpret blk n
 \ ( n1 n2 -- ) load blocks between n1 and n2, inclusive
 : thru over - 1+ 4 lshift line ! >blk blk ! ;
 \ ( n -- ) display n right aligned by 2 spaces
 : .2 nl> dup 10 < if spc> then . spc> ;
 \ ( addr -- ) print the contents as a block at addr
 : display 16 >r begin 16 r@ - .2 dup emitln 64 + next drop ;
-\ ( n -- ) print the contents of block n
-: list >blk display ; 
-\ ( -- ) display current buffer content
-: blk. blk( display ;
-\ ( n -- ) read block n into buffer and make n active
-: blk@ dup to blk? >blk blk( 1024 move ;
-\ ( s d -- ) copy contents of block s to block d
-: copy >blk >r >blk r> 1024 move ;
-\ ( n -- ) convert block number to sector number in hard drive
-: >sector 2* 18 + ;
-\ ( -- ) write current block to disk
-: flush blk( blk? >sector write
-  if ." success!" else ." failed!" exit then
-  blk( blk? >blk 1024 move ;
-\ ( -- ) emties current block
-: wipe blk( 1024 0 fill ;
+: list ( n -- ) >blk display ; \ print contents of blk n
+: index 16 >r begin 16 r@ - .2 dup >blk emitln 1+ next drop ;
+\ copy contents of block s to block d
+: copy ( s d -- ) >blk >r >blk r> 1024 move ;
+\ BOOT MESSAGE
+: memused here @ $500 - ; : memfree $7bff memused - ;
+: memstat \ prints current dictionary usage
+  memused 1000 / . ." kB used " memfree 1000 / . ." kB free" ;
+here @ ," Welcome to TANUKI OS" 20 type nl> memstat
+3 30 thru here @ CR c, LF c, ," Loading borbular..." 21 type
 
 
-\ BLOCK EDITOR
-\ word for drawing text at coordinate
-\ ctrl-w for save
-: rand 25173 * 13849 + ;
-: a 1 begin dup 7 mod 191 + emit rand 0 10000 usleep again ;
+
+
+
+
+
+
+\ KEY DEBUG
+: ?exit ( c -- ) $2e03 = if rdrop then ; \ exit word if ctrl-c
+: keydump ( -- ) begin key? if dup nl> .X ?exit then again ;
+: ?abort ( -- ) key? if $2e03 = if abort" aborted!" then then ;
+
+
+\ GRAPHICS MODE
+
+: mode13h $0013 >ax int10h ; \ 320x200 256 color graphics
+: mode4h  $0003 >ax int10h ; \ 80x25 16 color text
+
+
+\ HELPER WORDS
+
+: <1+ ( a b -- a+1 b ) swap 1+ swap ; \ incr 2nd item on stack
+: <1- ( a b -- a-1 b ) swap 1- swap ; \ decr 2nd item on stack
+: negate ( n -- -n ) not 1+ ;         \ negate a number
+
+
+\ DISPLAY TILES
+
+\ convert 8x8 tile coords to relative pixel displacement
+: >plot ( x y -- count ) 8 * 320 * swap 8 * + ;
+
+\ convert ASCII value to addr of character tile
+: >abc ( char -- #addr ) 'a' - 6 lshift #abc + ;
+
+$48 value TRANS
+
+: blip8 ( #addr x y -- ) \ 8x8 filtered
+  >plot 313 - 64 >r begin
+    r@ 8 mod 0 = if 313 + else 1+ then
+    over c@ dup TRANS = if drop else over draw then <1+
+  next 2drop ;
+
+: yblip8 ( #addr x y -- ) \ 8x8 filtered, y-axis mirrored
+  >plot 313 - swap 9 - swap
+  8 >r begin
+    swap 16 + swap
+    8 >r begin
+      r@ 8 mod 0 = if 313 + else 1+ then
+      over c@ dup TRANS = if drop else over draw then <1-
+    next
+  next 2drop ;
+
+: blip16 ( #addr x y -- ) \ 16x16 filtered
+  >plot 305 - 256 >r begin
+    r@ 16 mod 0 = if 305 + else 1+ then
+    over c@ dup TRANS = if drop else over draw then <1+
+  next 2drop ;
+
+: yblip16 ( #addr x y -- ) \ 16x16 filtered y-axis mirrored
+  >plot 305 - swap 17 - swap
+  16 >r begin
+    swap 32 + swap
+    16 >r begin
+      r@ 16 mod 0 = if 305 + else 1+ then
+      over c@ dup TRANS = if drop else over draw then <1-
+    next
+  next 2drop ;
+
+: xblip16 ( #addr x y -- ) \ 16x16 filtered x-axis mirrored
+  >plot swap 240 + swap
+  16 >r begin
+    16 >r begin
+      over c@ dup TRANS = if drop else over draw then <1+ 1+
+    next 304 + >r 32 - r>
+  next 2drop ;
+
+: zblip16 ( #addr x y -- ) \ 16x16 filtered x-y-axis  mirrored
+  >plot 305 - swap 255 + swap 256 >r begin
+    r@ 16 mod 0 = if 305 + else 1+ then
+    over c@ dup TRANS = if drop else over draw then <1-
+  next 2drop ;
+
+: blip32 ( #addr x y -- ) \ like blip32 but x2 display
+  >plot 289 - 1024 >r begin
+    r@ 32 mod 0 = if 289 + else 1+ then
+    over c@ dup TRANS = if drop else over draw then <1+
+  next 2drop ;
+
+: 2x2draw ( #addr disp -- #addr+1 disp+2 )
+  over c@ over draw 1+
+  over c@ over draw 319 +
+  over c@ over draw 1+
+  over c@ over draw 319 - <1+ ;
+
+: 2xblip16 ( #addr x y -- )
+  >plot
+  16 >r begin
+    16 >r begin
+      over c@ TRANS = if 2+ <1+ else 2x2draw then
+    next 320 + 288 +
+  next 2drop ;
+
+: 2xblip32 ( #addr x y -- )
+  >plot 32 >r begin
+    32 >r begin
+      over c@ TRANS = if 2+ <1+ else 2x2draw then
+    next 320 + 256 + 
+  next 2drop ;
+
+
+\ DISPLAY 8x8 TILES
+
+40 value TILE8-X \ screen width
+24 value TILE8-Y \ screen height
+
+0 value cur8x \ cursor x position
+0 value cur8y \ cursor y position
+
+: >cur8 ( x y -- ) to cur8y to cur8x ; \ store to cursor pos
+: cur8> ( -- x y ) cur8x cur8y ;       \ fetch cursor position
+: 0cur8 ( -- ) 0 to cur8x 0 to cur8y ; \ zero cursor position
+
+: cur8+ ( -- ) \ incr cursor position
+  cur8x 1+ dup to cur8x TILE8-X >= if
+    cur8x TILE8-X - to cur8x cur8y 1+ to cur8y
+  then ;
+
+\ like blip8, but with cursor behaviour
+: emit8 ( #addr -- ) cur8> blip8 cur8+ ;
+
+: ?emit8 ( char -- )
+  dup SPC = if drop cur8+ exit then
+  dup '!' = if drop #! emit8 exit then
+  dup '?' = if drop #? emit8 exit then
+  dup ',' = if drop #, emit8 exit then
+  dup '.' = if drop #. emit8 exit then
+  >abc emit8
+;
+
+\ graphically emit counted string
+: type8 ( addr len -- ) >r begin dup c@ ?emit8 1+ next drop ;
+
+: ?.8 ( n -- )
+  dup 0 = if drop exit then 10 /mod ?.8 \ resurive definition
+  6 lshift #123 + cur8> blip8 cur8+ ;
+
+: .8 ( n -- ) dup if ?.8 else #123 emit8 then ; \ emit8 numbers
+
+
+\ DISPLAY 16x16 TILES
+
+0 value cur16x
+0 value cur16y
+
+20 value TILE16-X
+11 value TILE16-Y
+TILE16-X TILE16-Y * value TILE16-AREA
+
+here @ TILE16-AREA 3 * allot0 value grid-bread
+here @ TILE16-AREA 3 * allot0 value grid-butter
+here @ TILE16-AREA 3 * allot0 value grid-jam
+
+\ covert to coord to address displacement
+: >disp16 ( x y -- n ) TILE16-X * + 3 * ;
+
+: 3dup ( a b c -- a b c a b c ) >r 2dup r@ nrot r> ;
+: 3drop ( a b c -- ) 2drop drop ;
+
+\ ternary store, word+byte
+: wb! ( w b addr -- ) dup nrot 2+ c! ! ;
+
+\ fill memory, but by words+byte
+: 3fill ( a n w b -- )
+  rot >r rot begin 3dup wb! 3 + next 3drop ;
+
+: cur16> ( -- x y ) cur16x cur16y ;           \ fetch cursor pos
+: 0cur16 ( -- ) 0 to cur16x 0 to cur16y ;     \ zero cursor pos
+: 16>8 ( x y -- x*2 y*2 ) 2 * swap 2 * swap ; \ cur16 > cur8 pos
+
+: cur16+ ( -- ) \ progress 16x16 cursor
+  cur16x 1+ dup to cur16x TILE16-X >= if
+    cur16x TILE16-X - to cur16x cur16y 1+ to cur16y
+  then ;
+
+\ like blip16, but with cursor behaviour
+: emit16 ( #addr 0 -- )
+  dup 0 = if drop cur16> 16>8  blip16 cur16+ exit then
+  dup 1 = if drop cur16> 16>8 yblip16 cur16+ exit then
+  dup 2 = if drop cur16> 16>8 zblip16 cur16+ exit then
+  dup 3 = if drop cur16> 16>8 xblip16 cur16+ exit then
+  abort" Something went wrong." ;
+
+
+\ DISPLAY PAGE
+
+: drawgrid ( #addr -- ) \ draw grid to the buffer
+  0cur16 TILE16-AREA >r begin
+    dup @ dup if over 2+ c@ emit16 else drop cur16+ then 3 +
+  next drop ;
+
+: drawui ( -- )
+  #ui-corner 0 22 blip8
+  #ui-corner 39 22 yblip8
+  38 >r begin #ui-edge-top r@ 22 blip8 next
+  40 >r begin #ui-full r@ 23 blip16 next
+  #ui-edge-left 0 23 blip8
+  #ui-edge-left 39 23 yblip8
+  #ui-edge-left 0 24 blip8
+  #ui-edge-left 39 24 yblip8
+;
+
+: drawtext ( -- ) 1 23 >cur8 s" hazel is thinking..." type8 ;
+
+
+\ PLAYER POSITION
+
+20 value Px
+10 value Py
+0 value Pdir
+0 value Pframe
+
+\ left
+: Px- Px 2- to Px -1 to Pdir
+  Px 0 < if 0 to Px exit then
+;
+
+\ right
+: Px+ Px 2+ to Px 0 to Pdir
+  Px 38 > if 38 to Px exit then
+;
+
+\ down
+: Py- Py 2- to Py
+  Py 0 < if 0 to Py exit then
+;
+
+\ up
+: Py+ Py 2+ to Py
+  Py 20 > if 20 to Py exit then
+;
+
+: drawhazel
+  Pdir if
+    Pframe 2 mod if
+      #hazel-crown-1 Px Py blip16
+      else #hazel-crown-2 Px Py blip16
+    then
+    else Pframe 2 mod if
+      #hazel-crown-1 Px Py yblip16
+      else #hazel-crown-2 Px Py yblip16
+    then
+  then
+  Pframe 1+ to Pframe
+;
+
+: animate
+  grid-butter TILE16-AREA >r begin
+    dup @ #water-1 = if #water-2 over ! then
+    dup @ #water-2 = if #water-1 over ! then
+    3 +
+  next drop ;
+
+: update
+  grid-bread  drawgrid
+  grid-butter drawgrid
+  drawui
+  drawtext
+  drawhazel
+  blit
+;
+
+0 value key>
+
+$4800 value UP
+$5000 value DOWN
+$4b00 value LEFT
+$4d00 value RIGHT
+$011b value ESC
+
+: loop begin key? if
+    dup ESC = if mode4h abort" Exiting game..." then
+    dup LEFT = if Px- then
+    dup UP = if Py- then
+    dup DOWN = if Py+ then
+    dup RIGHT = if Px+ then
+    drop update
+  then again ;
+
+: hello
+  3 14 >cur8 s" this is a very, very long string!?" type8
+  3 15 >cur8 s" yes, indeed!..." type8 ;
+
+: home-fill-bread
+  grid-bread TILE16-AREA #floor-full 0 3fill
+;
+
+: home-fill-butter
+  \ flooring
+  #floor-corner 0 grid-butter 0 0 >disp16 + wb!
+  #floor-corner 1 grid-butter 19 0 >disp16 + wb!
+  #floor-corner 2 grid-butter 19 10 >disp16 + wb!
+  #floor-corner 3 grid-butter 0 10 >disp16 + wb!
+  TILE16-X 2- >r begin
+    #floor-edge-top 0 grid-butter r@ 0 >disp16 + wb!
+    #floor-edge-top 2 grid-butter r@ TILE16-Y 1- >disp16 + wb!
+  next
+  TILE16-Y 2- >r begin
+    #floor-edge-left 0 grid-butter 0 r@ >disp16 + wb!
+    #floor-edge-left 1 grid-butter TILE16-X 1- r@ >disp16 + wb!
+  next
+
+  \ objects
+  #plant-2 0 grid-butter 1 1 >disp16 + wb!
+  #plant-1 0 grid-butter 3 2 >disp16 + wb!
+  #cage-top 0 grid-butter 2 4 >disp16 + wb!
+  #cage-bottom 0 grid-butter 2 5 >disp16 + wb!
+  #table 0 grid-butter 2 6 >disp16 + wb!
+  #water-1 0 grid-butter 15 9 >disp16 + wb!
+;
+
+: home-fill-jam
+;
+
+: title-fill
+  TILE16-Y >r begin TILE16-X >r begin
+    #brick r@ 1- r@? 1- 16>8 blip16
+  next next
+  TILE16-X >r begin #brick r@ 1- 2* 22 blip16 next
+  TILE16-X >r begin #brick r@ 1- 2* 24 blip16 next
+
+  7 4 >cur8 s" your virtual canary friend" type8
+  #title-1 10 6 2xblip16
+  #title-2 14 6 2xblip16
+  #title-3 18 6 2xblip16
+  #title-4 22 6 2xblip16
+  #title-5 26 6 2xblip16
+  #hazel-title-1 16 10 2xblip32
+  10 22 >cur8 s" powered by tanuki os" type8
+  #os 36 21 blip32
+;
+
+: run
+  mode13h
+  title-fill
+  blit 10 0 usleep
+
+  home-fill-bread
+  home-fill-butter
+  home-fill-jam
+  loop
+;
+
+here @ ,"  Done!" 5 type

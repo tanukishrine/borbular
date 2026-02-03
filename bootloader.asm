@@ -23,23 +23,32 @@ start:
 	mov	sp, ax
 
 	; load kernel
-	mov	ah, 0x02	; read sectors from drive
-	mov	al, 16		; sector count
+	mov	ah, 0x02
+	mov	al, 59		; sector count
 	mov	ch, 0		; cylinder
 	mov	cl, 2		; sector
 	mov	dh, 0		; head
-				; dl = 	boot drive
+				; dl = boot drive
 	mov	bx, 0x0500	; destination address
 	int	0x13
 
 	; load source
-	mov	ah, 0x02	; read sectors from drive
-	mov	al, 64		; sector count
+	mov	ah, 0x02
+	mov	al, 3		; sector count
 	mov	ch, 0		; cylinder
-	mov	cl, 18		; sector
+	mov	cl, 61		; sector
 	mov	dh, 0		; head
-				; dl = 	boot drive
+				; dl = boot drive
 	mov	bx, 0x7e00	; destination address
+	int	0x13
+
+	mov	ah, 0x02
+	mov	al, 60		; sector count
+	mov	ch, 0		; cylinder
+	mov	cl, 1		; sector
+	mov	dh, 1		; head
+				; dl = boot drive
+	add	bx, 512*3	; destination address
 	int	0x13
 
 	; clear screen

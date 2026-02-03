@@ -2,7 +2,7 @@
 
 default: build run
 
-build: disk.img
+build: tiles.raw disk.img
 
 run: 
 	qemu-system-i386 \
@@ -10,6 +10,8 @@ run:
 
 clean:
 	rm *.bin
+	rm *.img
+	rm raw/*.raw
 
 load: 
 	diskutil unmountDisk /dev/disk4
@@ -17,23 +19,25 @@ load:
 	sync
 	diskutil eject /dev/disk4
 
-# 512 bytes
+# 1 sector
 bootloader.bin: bootloader.asm
 	nasm $< -o $@
 
-# 8192 bytes => 16 sectors
+# 59 sectors
 kernel.bin: kernel.asm
 	nasm $< -o $@
-	truncate -s 8192 $@
+	truncate -s $$((512*59)) $@
 
-# 32768 bytes => 64 sectors
+# 64 sectors
 source.bin: source.fs blocks.py
 	python3 blocks.py $< $@
-	truncate -s 32768 $@
+	truncate -s $$((512*64)) $@
 
-# 41472 bytes
 disk.img: bootloader.bin kernel.bin source.bin
 	cat bootloader.bin kernel.bin source.bin > disk.img
+
+tiles.raw: tiles
+	python3 format.py
 
 truncate-%:
 	@size=$$(stat -f %z $*); \
